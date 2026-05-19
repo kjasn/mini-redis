@@ -78,12 +78,14 @@ everything else.
 1. What are the 6 variants of `Frame`, and what does each represent in the
    Redis protocol?
 
-   => `Simple`, `Error`, `Integer`, `Bulk`, `Null`, `Array`
+   => `Simple` - simple string, `Error` - simple error, `Integer` - Integer,
+   `Bulk` - bulk string, `Null` - null bulk string, `Array` - array
 
 2. Why does `Frame::check` exist separately from `Frame::parse`? What
    problem does this solve?
 
-   => Check if the entire message can be decoded from `src`
+   => Check if the entire message can be decoded from `src`, validate the
+   frame avoid allocating for malformed frames.
 
 3. What's the difference between `Error::Incomplete` and `Error::Other`?
 
@@ -138,10 +140,49 @@ writes Frames over a TCP socket.
 
 1. Why is `BufWriter` used for the write side but `BytesMut` for the read
    side? Why not use the same approach for both?
+
+   ~=> `ButesMut` is a buffer to store data for read, read in loop and check then
+   write to the write buffer `BufWriter`, which wait until it has enough data
+   to flush to the socket. If use the same approach, it needs to control the
+   concurrency option, this may reduce the performance.~
+
+   => Read side (`BytesMut`): data arrives from the socket in unpredictable chunks.
+   You need a growable buffer to accumulate partial bytes until a complete frame
+   is present. `BytesMut` grows as needed.
+
+
+    Write side (`BufWriter`): you're writing complete, known-size frames. You need
+    batching to avoid many small syscalls. `BufWriter` accumulates writes and flushes
+    once.
+
 2. Trace through `read_frame()`: what happens if the socket sends half a
    frame? What about a complete frame followed by the start of another?
+
+   ~=> When it read a incomplete frame, it try to parse it, `check()` return a
+   `Ok(None)`, then check if the write buffer `stream` has any data, if yes,
+   then return a error `Err("connection reset by peer".into())`, if no,
+   continue read;~
+
+   => For a half frame (e.g., `$5\r\nhel` — incomplete):
+   - `read_frame()` calls `parse_frame()`
+   - `Frame::check()` returns `Err(Incomplete)`
+   - `parse_frame()` maps that to `Ok(None)`
+   - Back in `read_frame()`, since `Ok(None)` means "not enough data yet,"
+   it reads more from socket: `self.stream.read_buf(&mut self.buffer).await?`
+   - If the read returns 0 (socket closed), then it checks if the buffer is empty.
+   If empty → clean close → `Ok(None)`. If not empty →
+   `Err("connection reset by peer")`
+   - If read returns more bytes → loop back, try `parse_frame()` again
+
+   When it read a complete one followed by the start of another,
+   it parses the complete frame and the left stay in read buffer.
+
 3. Why does `Connection::write_frame` call `flush()` at the end? What
    would happen without it?
+
+   => Send all the data in write buffer to socket, it not, it'll stay in
+   buffer, the caller won't receive any data, the data in buffer will be
+   discarded later.
 
 ---
 

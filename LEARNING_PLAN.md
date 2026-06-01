@@ -150,10 +150,9 @@ writes Frames over a TCP socket.
    You need a growable buffer to accumulate partial bytes until a complete frame
    is present. `BytesMut` grows as needed.
 
-
-    Write side (`BufWriter`): you're writing complete, known-size frames. You need
-    batching to avoid many small syscalls. `BufWriter` accumulates writes and flushes
-    once.
+   Write side (`BufWriter`): you're writing complete, known-size frames. You need
+   batching to avoid many small syscalls. `BufWriter` accumulates writes and flushes
+   once.
 
 2. Trace through `read_frame()`: what happens if the socket sends half a
    frame? What about a complete frame followed by the start of another?
@@ -168,10 +167,10 @@ writes Frames over a TCP socket.
    - `Frame::check()` returns `Err(Incomplete)`
    - `parse_frame()` maps that to `Ok(None)`
    - Back in `read_frame()`, since `Ok(None)` means "not enough data yet,"
-   it reads more from socket: `self.stream.read_buf(&mut self.buffer).await?`
+     it reads more from socket: `self.stream.read_buf(&mut self.buffer).await?`
    - If the read returns 0 (socket closed), then it checks if the buffer is empty.
-   If empty → clean close → `Ok(None)`. If not empty →
-   `Err("connection reset by peer")`
+     If empty → clean close → `Ok(None)`. If not empty →
+     `Err("connection reset by peer")`
    - If read returns more bytes → loop back, try `parse_frame()` again
 
    When it read a complete one followed by the start of another,
@@ -221,10 +220,33 @@ database. Start with the simplest one.
 
 1. What are the three methods every command must implement, and what does
    each do?
-2. How does `Command::from_frame` decide which command to create?
-3. Why does `Get::into_frame` use `Bytes::from("get".as_bytes())` instead
+
+   => as follows:
+   - `parse_frames(&mut Parse)` — extract parameters from the frame,
+     like `get key1`, extract `key1`
+   - `apply(db, dst, ...)` — execute the command, get data from `db` if needed,
+     write the response to `dst`
+   - `into_frame(self)` — convert back to a Frame (used by the client)
+
+1. How does `Command::from_frame` decide which command to create?
+
+   => Match the command name then convert to the enumeration command, for known
+   commands(which are listed in the enumeration), it will call the corresponding
+   `parse_frames` to extract parameters, for unknown commands, it will create a
+   `Command::Unknown` with the command name. Call `parse.finish()` to check if
+   all parameters are consumed.
+
+1. Why does `Get::into_frame` use `Bytes::from("get".as_bytes())` instead
    of just `Bytes::from("get")`?
-4. What happens when the server receives an unrecognized command?
+
+   => ~Convert the string slice to bytes slice, reduce copy when convert to `Bytes`~
+
+   => The `.as_bytes()` is an explicit style choice in this codebase...
+
+1. What happens when the server receives an unrecognized command?
+
+   => First it match the command name, create a `Command::Unknown`, then server
+   will return an error `Frame::Error(format!("ERR unknown command '{}'", self.command_name))`
 
 ---
 
@@ -288,12 +310,36 @@ dispatch commands, write responses.
 
 1. Trace the full lifecycle of a `SET foo bar` command: from TCP accept
    through to the response being written. Which functions are called?
+
+   => The server accepts a connection => `tokio::spawn()` was called in
+   `listener::run()` => `handler.run().await` => `self.connection.read_frame()`
+   => `Command::from_frame()`, match the exact command and call `parse_frame()`
+   => `cmd.apply()` update the database and writes the resp back to client
+
 2. Why is `std::sync::Mutex` used instead of `tokio::sync::Mutex`?
    What would go wrong with a Tokio mutex here?
+
+   => The step of `std::sync::Mutex` acquiring a lock is synchronous, and there
+   is no asynchronous and time-consuming operations after acquiring the lock,
+   no need to across an `.await` point. The `std::sync::Mutex` is simpler and faster.
+
 3. How does the server know when all connections have finished during
    shutdown? Explain the `mpsc` channel trick.
+
+   => Each handler has a copy of `shutdown_complete_tx`, the listener also holds
+   one, the server dropped listener's `shutdown_complete_tx` and wait all finish
+   here: `shutdown_complete_rx.recv().await`, once all connections finish, the
+   `recv()` returns `None`, then the server can exit.
+
 4. How does key expiration work? What triggers the background task to
    wake up?
+
+   It spawns a task to do expiration work(`purge_expired_tasks()` runs until the
+   server shutdown) every time it new a database, like call `server::run()`. The
+   state stores all key data using a `BTreeSet`, which is sorted by expiration
+   time, so every time it got the time when the next key expires. Then sleep until
+   that time OR notified by 2 ways: `set()` which update a key's expiration time
+   or `Drop` => `shutdown_purge_task()`
 
 ---
 

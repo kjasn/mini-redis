@@ -22,6 +22,7 @@ pub struct Connection {
     // The `TcpStream`. It is decorated with a `BufWriter`, which provides write
     // level buffering. The `BufWriter` implementation provided by Tokio is
     // sufficient for our needs.
+    // stream is a tcp connenction, not only the write buffer, just in write side
     stream: BufWriter<TcpStream>,
 
     // The buffer for reading frames.
@@ -66,6 +67,10 @@ impl Connection {
             //
             // On success, the number of bytes is returned. `0` indicates "end
             // of stream".
+            // The write buffer(self.stream) in read(using read_buf) will read bytes from the socket
+            // Network → TcpStream → self.buffer (BytesMut)
+            // read_buf() returns how many bytes the buf(self.buffer) has been filled with (from the tcp
+            // connnection)
             if 0 == self.stream.read_buf(&mut self.buffer).await? {
                 // The remote closed the connection. For this to be a clean
                 // shutdown, there should be no data in the read buffer. If
@@ -166,7 +171,7 @@ impl Connection {
                 self.write_decimal(val.len() as u64).await?;
 
                 // Iterate and encode each entry in the array.
-                for entry in &**val {
+                for entry in val {
                     self.write_value(entry).await?;
                 }
             }

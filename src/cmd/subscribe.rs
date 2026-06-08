@@ -176,6 +176,8 @@ async fn subscribe_to_channel(
     let mut rx = db.subscribe(channel_name.clone());
 
     // Subscribe to the channel.
+    // just create a async stream wrapping recv(), run it until
+    // being called subscriptions.next()
     let rx = Box::pin(async_stream::stream! {
         loop {
             match rx.recv().await {

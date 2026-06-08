@@ -387,10 +387,38 @@ sends commands, and reads responses. This phase also introduces pub/sub.
 ### Questions to answer before moving on
 
 1. How does the typestate pattern prevent misuse of the Subscriber?
+
+   => when call `subscribe()` which takes a `self` by value(not `&self`),
+   it consumes the `Client` and returns a `Subscriber` wrapping with
+   the same connection and subscribed channels, ~so it can not use
+   commands other than subscribe, unsubscribe, and publish, exit and etc.~
+   it doesn't have get(), set(), or publish().
+
 2. What does `into_stream()` do, and why can't you just implement
    `Stream` directly on `Subscriber`?
+
+   => Implement `Stream` with safe code is non trivial. "The usage of
+   async/await would require a manual Stream implementation to use `unsafe`
+   code. Instead, a conversion function is provided and the returned stream
+   is implemented with the help of the `async-stream` crate."
+
+   **The deeper reason**: Stream::poll_next requires manual state machine
+   management with Pin<&mut Self>, which is very hard to do with safe Rust
+   when you have async/await inside. The async_stream::stream! macro
+   handles all that complexity internally.
+
 3. How does `subscribe.rs` handle a client that subscribes to multiple
    channels and then unsubscribes from one?
+
+   => It stores all subscribed channels into a `StreamMap` in
+   `<channel_name, handle>` format when receive a message -> enter `select!` loop,
+   wait for the following to happen:
+   1. Available message from channels
+   2. Receive a subscribe or unsubscribe command from the client
+   3. A server shutdown signal
+
+   If receive a unsubscribe command, it will remove the channel from `StreamMap`,
+   the left stay continue receiving messages.
 
 ---
 
